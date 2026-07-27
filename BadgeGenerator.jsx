@@ -26,7 +26,7 @@ const DEFAULT_BADGE_BG = badgeTemplate;
 const FIELDS = [
   { key: "fullName", label: "Full name", left: 58, width: 130, bottom: 60 },
   { key: "sex", label: "Sex", left: 58, width: 130, bottom: 40 },
-  { key: "from", label: "From", left: 190,width: 130, bottom: 60 },
+  { key: "from", label: "From", left: 196, width: 130, bottom: 60 },
   { key: "roomNumber", label: "Room number", left: 190, width: 130, bottom: 40 },
 ];
 
@@ -197,7 +197,7 @@ function RegistrationForm({ onRegister, pendingCount }) {
       </div>
 
       <label className="f-label">
-        ስምምነት/ደቡብ ሰበካ
+        ሰበካ
         <select value={from} onChange={(event) => setFrom(event.target.value)}>
           {FROM_OPTIONS.map((option) => (
             <option key={option} value={option}>
@@ -320,33 +320,87 @@ function PendingItem({ attendee, isEditing, onStartEdit, onCancelEdit, onSave, o
   );
 }
 
-function PendingList({ pending, onRemove, onUpdate }) {
+// Shows the attendee list for whichever tab is selected in the sidebar —
+// the in-progress sheet OR any sealed sheet. Same click-to-edit behavior
+// everywhere, so a typo caught after a sheet is sealed is just as easy to
+// fix as one caught before. Removing an attendee always asks for
+// confirmation first, since it can't be undone from here.
+function AttendeeListPanel({
+  selected,
+  pending,
+  sheets,
+  onUpdatePending,
+  onRemovePending,
+  onUpdateSheetAttendee,
+  onRemoveSheetAttendee,
+  onDeleteSheet,
+}) {
+  const isPending = selected === "pending";
+  const items = isPending ? pending : sheets[selected] || [];
+  const filledCount = items.filter(Boolean).length;
   const [editingId, setEditingId] = useState(null);
 
-  // If the attendee currently being edited gets removed elsewhere, drop
-  // out of edit mode instead of pointing at a stale id.
+  // Switching tabs (or the underlying data changing shape) always closes
+  // any open edit form, so we never edit the wrong attendee by accident.
   useEffect(() => {
-    if (editingId !== null && !pending.some((a) => a.id === editingId)) {
-      setEditingId(null);
-    }
-  }, [pending, editingId]);
+    setEditingId(null);
+  }, [selected]);
+
+  const handleRemove = (attendee) => {
+    const label = attendee.fullName || "this attendee";
+    if (!window.confirm(`Remove ${label}? This can't be undone.`)) return;
+    if (isPending) onRemovePending(attendee.id);
+    else onRemoveSheetAttendee(selected, attendee.id);
+  };
+
+  const handleSave = (attendee, data) => {
+    if (isPending) onUpdatePending(attendee.id, data);
+    else onUpdateSheetAttendee(selected, attendee.id, data);
+    setEditingId(null);
+  };
 
   return (
-    <div className="pending-list">
-      {pending.map((attendee) => (
-        <PendingItem
-          key={attendee.id}
-          attendee={attendee}
-          isEditing={editingId === attendee.id}
-          onStartEdit={() => setEditingId(attendee.id)}
-          onCancelEdit={() => setEditingId(null)}
-          onSave={(data) => {
-            onUpdate(attendee.id, data);
-            setEditingId(null);
-          }}
-          onRemove={() => onRemove(attendee.id)}
-        />
-      ))}
+    <div className="attendee-list-panel">
+      <div className="attendee-list-head">
+        <span className="attendee-list-title">
+          {isPending ? "Attendees in progress" : `Attendees on Sheet ${selected + 1}`}
+        </span>
+        <span className="attendee-list-count">{filledCount}/{SLOTS}</span>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="attendee-list-empty">No attendees added yet.</p>
+      ) : (
+        <div className="pending-list">
+          {items.map((attendee, index) =>
+            attendee ? (
+              <PendingItem
+                key={attendee.id}
+                attendee={attendee}
+                isEditing={editingId === attendee.id}
+                onStartEdit={() => setEditingId(attendee.id)}
+                onCancelEdit={() => setEditingId(null)}
+                onSave={(data) => handleSave(attendee, data)}
+                onRemove={() => handleRemove(attendee)}
+              />
+            ) : (
+              <div key={`empty-${index}`} className="pending-item pending-item-empty">
+                <span className="pending-item-empty-label">Empty slot</span>
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {!isPending && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-danger-ghost"
+          onClick={() => onDeleteSheet(selected)}
+        >
+          Delete this sheet
+        </button>
+      )}
     </div>
   );
 }
@@ -505,6 +559,9 @@ export default function BadgeGenerator() {
   };
 
   const clearAll = () => {
+    if (!window.confirm("Reset everything? This clears the in-progress sheet and all sealed sheets.")) {
+      return;
+    }
     setPending([]);
     setSheets([]);
     setSelected("pending");
@@ -520,6 +577,43 @@ export default function BadgeGenerator() {
     setPending((prev) =>
       prev.map((attendee) => (attendee.id === id ? { ...attendee, ...data } : attendee))
     );
+  };
+
+  // Same fix-in-place editing, but for an attendee on an already-sealed
+  // sheet. The slot position is preserved so the badge layout doesn't shift.
+  const updateSheetAttendee = (sheetIndex, attendeeId, data) => {
+    setSheets((prev) =>
+      prev.map((sheet, idx) =>
+        idx === sheetIndex
+          ? sheet.map((attendee) => (attendee && attendee.id === attendeeId ? { ...attendee, ...data } : attendee))
+          : sheet
+      )
+    );
+  };
+
+  // Removing someone from a sealed sheet clears their slot rather than
+  // reflowing the rest of the sheet, so nobody else's badge position moves.
+  const removeSheetAttendee = (sheetIndex, attendeeId) => {
+    setSheets((prev) =>
+      prev.map((sheet, idx) =>
+        idx === sheetIndex
+          ? sheet.map((attendee) => (attendee && attendee.id === attendeeId ? null : attendee))
+          : sheet
+      )
+    );
+  };
+
+  // Deletes an entire sealed sheet. Selection is re-pointed so it never
+  // ends up referencing a sheet index that no longer exists.
+  const deleteSheet = (sheetIndex) => {
+    if (!window.confirm(`Delete Sheet ${sheetIndex + 1}? This can't be undone.`)) return;
+    setSheets((prev) => prev.filter((_, idx) => idx !== sheetIndex));
+    setSelected((prevSelected) => {
+      if (prevSelected === "pending") return prevSelected;
+      if (prevSelected === sheetIndex) return "pending";
+      if (prevSelected > sheetIndex) return prevSelected - 1;
+      return prevSelected;
+    });
   };
 
   const pendingSlots = useMemo(() => {
@@ -540,7 +634,8 @@ export default function BadgeGenerator() {
 
   const viewingSheet = selected === "pending" ? pendingSlots : sheets[selected] || pendingSlots;
   const viewingIsSealed = selected !== "pending";
-  const totalAttendees = sheets.length * SLOTS + pending.length;
+  const totalAttendees =
+    sheets.reduce((sum, sheet) => sum + sheet.filter(Boolean).length, 0) + pending.length;
 
   if (page === "home") {
     return (
@@ -595,24 +690,34 @@ export default function BadgeGenerator() {
               <span className="count">{pending.length}/{SLOTS}</span>
             </button>
 
-            {sheets.map((sheet, index) => (
-              <div key={index} className="sheet-tab-row">
+            {sheets.map((sheet, index) => {
+              const filled = sheet.filter(Boolean).length;
+              return (
                 <button
+                  key={index}
                   className={"sheet-tab" + (selected === index ? " active" : "")}
                   onClick={() => setSelected(index)}
                 >
                   <span>Sheet {index + 1}</span>
-                  <span className="count">8/8 ✓</span>
+                  <span className="count">
+                    {filled}/{SLOTS}
+                    {filled === SLOTS ? " ✓" : ""}
+                  </span>
                 </button>
-              </div>
-            ))}
+              );
+            })}
 
-            {pending.length > 0 && (
-              <>
-                <p className="pending-list-hint">Click a name below to fix a typo.</p>
-                <PendingList pending={pending} onRemove={removePending} onUpdate={updatePending} />
-              </>
-            )}
+            <p className="pending-list-hint">Click any name below to fix a typo — works on sealed sheets too.</p>
+            <AttendeeListPanel
+              selected={selected}
+              pending={pending}
+              sheets={sheets}
+              onUpdatePending={updatePending}
+              onRemovePending={removePending}
+              onUpdateSheetAttendee={updateSheetAttendee}
+              onRemoveSheetAttendee={removeSheetAttendee}
+              onDeleteSheet={deleteSheet}
+            />
           </aside>
         </div>
 
@@ -821,8 +926,17 @@ body {
 .sheet-tab.active { border-color: var(--accent); background: rgba(183,92,39,0.16); }
 .sheet-tab .count { font-weight: 500; color: var(--ink-dim); }
 .pending-list-hint { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-dim); }
+.attendee-list-panel { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--glass-border); display: flex; flex-direction: column; gap: 8px; }
+.attendee-list-head { display: flex; justify-content: space-between; align-items: baseline; }
+.attendee-list-title { font-family: var(--font-display); font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.attendee-list-count { font-size: 11.5px; color: var(--ink-dim); font-weight: 600; }
+.attendee-list-empty { margin: 2px 0 0; font-size: 12px; color: var(--ink-dim); font-style: italic; }
+.btn-danger-ghost { margin-top: 4px; color: #ff9a9a; border-color: rgba(255,138,138,0.3); }
+.btn-danger-ghost:hover { color: #ffb3b3; border-color: rgba(255,138,138,0.55); background: rgba(255,138,138,0.08); }
 .pending-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
 .pending-item { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border); border-radius: 8px; padding: 4px 4px 4px 9px; color: var(--ink); }
+.pending-item-empty { padding: 8px 9px; border-style: dashed; opacity: 0.6; }
+.pending-item-empty-label { font-size: 12px; color: var(--ink-dim); font-style: italic; }
 .pending-item-name {
   flex: 1;
   text-align: left;
