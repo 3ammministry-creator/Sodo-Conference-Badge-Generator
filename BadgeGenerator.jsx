@@ -9,8 +9,8 @@ const PAGE_H = 851.89;
 const MARGIN = 22.35;
 const GAP_X = 14.17;
 const GAP_Y = 14.17;
-const BADGE_W = 272.65;
-const BADGE_H = 183.07;
+const BADGE_W = 282.65;
+const BADGE_H = 193.07;
 const COLS = 2;
 const ROWS = 4;
 const SLOTS = COLS * ROWS;
@@ -24,9 +24,9 @@ const nextId = () => uid++;
 const DEFAULT_BADGE_BG = badgeTemplate;
 
 const FIELDS = [
-  { key: "fullName", label: "Full name", left: 60, width: 130, bottom: 58 },
-  { key: "sex", label: "Sex", left: 60, width: 130, bottom: 38 },
-  { key: "from", label: "From", left: 190, width: 130, bottom: 58 },
+  { key: "fullName", label: "Full name", left: 60, width: 130, bottom: 60 },
+  { key: "sex", label: "Sex", left: 60, width: 130, bottom: 40 },
+  { key: "from", label: "From", left: 198, width: 130, bottom: 60 },
   { key: "roomNumber", label: "Room number", left: 190, width: 130, bottom: 40 },
 ];
 
