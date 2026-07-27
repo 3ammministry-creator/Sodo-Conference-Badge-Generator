@@ -184,12 +184,16 @@ function RegistrationForm({ onRegister, pendingCount }) {
       <label className="f-label">
         ስምምነት/ደቡብ ሰበካ
         <select value={from} onChange={(event) => setFrom(event.target.value)}>
-          <option value="">ይምረጡ</option>
           <option value="ደቡብ መካከለኛ ሰበካ">ደቡብ መካከለኛ ሰበካ</option>
           <option value="ደቡብ ሰበካ">ደቡብ ሰበካ</option>
           <option value="መካከለኛ ሰበካ">መካከለኛ ሰበካ</option>
           <option value="ደቡብ ሸዋ ሰበካ">ደቡብ ሸዋ ሰበካ</option>
           <option value="ደቡብ ግሪን ሰበካ">ደቡብ ግሪን ሰበካ</option>
+          <option value="ደቡብ ምስራቅ ሰበካ">ደቡብ ምስራቅ ሰበካ</option>
+          <option value="ገናሌ ቤዚን ሰበካ">ገናሌ ቤዚን ሰበካ</option>
+           <option value="ሰሜን ሰበካ">ሰሜን ሰበካ</option>
+          <option value="ሰሜን ምስራቅ ሰበካ">ሰሜን ምስራቅ ሰባካ</option>
+          
         </select>
       </label>
 
