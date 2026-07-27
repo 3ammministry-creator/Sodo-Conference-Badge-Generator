@@ -801,7 +801,7 @@ body {
 .qr-overlay svg { display: block; }
 .field-text {
   font-family: 'Bela Bereka', var(--font-amharic);
-  font-size: 11pt;
+  font-size: 13pt;
   font-weight: 700;
   color: #2b2622;
   white-space: nowrap;
