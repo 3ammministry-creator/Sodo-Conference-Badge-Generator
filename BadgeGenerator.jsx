@@ -26,7 +26,7 @@ const DEFAULT_BADGE_BG = badgeTemplate;
 const FIELDS = [
   { key: "fullName", label: "Full name", left: 58, width: 130, bottom: 60 },
   { key: "sex", label: "Sex", left: 58, width: 130, bottom: 40 },
-  { key: "from", label: "From", left: 196, width: 130, bottom: 60 },
+  { key: "from", label: "From", left: 191, width: 130, bottom: 60 },
   { key: "roomNumber", label: "Room number", left: 190, width: 130, bottom: 40 },
 ];
 
