@@ -26,8 +26,23 @@ const DEFAULT_BADGE_BG = badgeTemplate;
 const FIELDS = [
   { key: "fullName", label: "Full name", left: 58, width: 130, bottom: 60 },
   { key: "sex", label: "Sex", left: 58, width: 130, bottom: 40 },
-  { key: "from", label: "From", left: 196, width: 130, bottom: 60 },
+  { key: "from", label: "From", left: 190,width: 130, bottom: 60 },
   { key: "roomNumber", label: "Room number", left: 190, width: 130, bottom: 40 },
+];
+
+// Options for the "from" (ስምምነት/ደቡብ ሰበካ) select, shared between the
+// registration form and the inline edit form so they never drift apart.
+const FROM_OPTIONS = [
+  "ይምረጡ",
+  "ደቡብ መካከለኛ ሰበካ",
+  "ደቡብ ሰበካ",
+  "መካከለኛ ሰበካ",
+  "ደቡብ ሸዋ ሰበካ",
+  "ደቡብ ግሪን ሰበካ",
+  "ደቡብ ምስራቅ ሰበካ",
+  "ገናሌ ቤዚን ሰበካ",
+  "ሰሜን ሰበካ",
+  "ሰሜን ምስራቅ ሰበካ",
 ];
 
 // QR code placement, in the same pt units/coordinate space as FIELDS
@@ -184,16 +199,11 @@ function RegistrationForm({ onRegister, pendingCount }) {
       <label className="f-label">
         ስምምነት/ደቡብ ሰበካ
         <select value={from} onChange={(event) => setFrom(event.target.value)}>
-          <option value="ደቡብ መካከለኛ ሰበካ">ደቡብ መካከለኛ ሰበካ</option>
-          <option value="ደቡብ ሰበካ">ደቡብ ሰበካ</option>
-          <option value="መካከለኛ ሰበካ">መካከለኛ ሰበካ</option>
-          <option value="ደቡብ ሸዋ ሰበካ">ደቡብ ሸዋ ሰበካ</option>
-          <option value="ደቡብ ግሪን ሰበካ">ደቡብ ግሪን ሰበካ</option>
-          <option value="ደቡብ ምስራቅ ሰበካ">ደቡብ ምስራቅ ሰበካ</option>
-          <option value="ገናሌ ቤዚን ሰበካ">ገናሌ ቤዚን ሰበካ</option>
-           <option value="ሰሜን ሰበካ">ሰሜን ሰበካ</option>
-          <option value="ሰሜን ምስራቅ ሰበካ">ሰሜን ምስራቅ ሰባካ</option>
-          
+          {FROM_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
         </select>
       </label>
 
@@ -209,6 +219,135 @@ function RegistrationForm({ onRegister, pendingCount }) {
         </p>
       </div>
     </form>
+  );
+}
+
+// Inline "click name to edit" row used inside the pending list. Clicking the
+// name swaps the row for a small edit form (name, sex, from, room) so typos
+// caught after registration can be fixed without removing and re-adding the
+// attendee.
+function PendingItem({ attendee, isEditing, onStartEdit, onCancelEdit, onSave, onRemove }) {
+  const [draft, setDraft] = useState(attendee);
+
+  useEffect(() => {
+    if (isEditing) setDraft(attendee);
+  }, [isEditing, attendee]);
+
+  if (!isEditing) {
+    return (
+      <div className="pending-item">
+        <button
+          type="button"
+          className="pending-item-name"
+          onClick={onStartEdit}
+          title="Click to edit this attendee"
+        >
+          {attendee.fullName || "(no name)"}
+        </button>
+        <button
+          type="button"
+          className="pending-item-remove"
+          onClick={onRemove}
+          aria-label="Remove attendee"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  const submit = (event) => {
+    event.preventDefault();
+    if (!draft.fullName.trim()) return;
+    onSave({
+      fullName: draft.fullName.trim(),
+      sex: draft.sex,
+      from: draft.from,
+      roomNumber: draft.roomNumber.trim(),
+    });
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") onCancelEdit();
+  };
+
+  return (
+    <form className="pending-edit-form" onSubmit={submit} onKeyDown={onKeyDown}>
+      <input
+        className="edit-input"
+        value={draft.fullName}
+        onChange={(event) => setDraft((d) => ({ ...d, fullName: event.target.value }))}
+        placeholder="Full name"
+        autoFocus
+      />
+      <div className="edit-row">
+        <select
+          className="edit-input"
+          value={draft.sex}
+          onChange={(event) => setDraft((d) => ({ ...d, sex: event.target.value }))}
+        >
+          <option value="">ይምረጡ</option>
+          <option value="ወንድ">ወንድ</option>
+          <option value="ሴት">ሴት</option>
+        </select>
+        <input
+          className="edit-input"
+          value={draft.roomNumber}
+          onChange={(event) => setDraft((d) => ({ ...d, roomNumber: event.target.value }))}
+          placeholder="Room"
+        />
+      </div>
+      <select
+        className="edit-input"
+        value={draft.from}
+        onChange={(event) => setDraft((d) => ({ ...d, from: event.target.value }))}
+      >
+        {FROM_OPTIONS.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <div className="edit-actions">
+        <button type="submit" className="btn-mini btn-mini-save">
+          Save
+        </button>
+        <button type="button" className="btn-mini btn-mini-cancel" onClick={onCancelEdit}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function PendingList({ pending, onRemove, onUpdate }) {
+  const [editingId, setEditingId] = useState(null);
+
+  // If the attendee currently being edited gets removed elsewhere, drop
+  // out of edit mode instead of pointing at a stale id.
+  useEffect(() => {
+    if (editingId !== null && !pending.some((a) => a.id === editingId)) {
+      setEditingId(null);
+    }
+  }, [pending, editingId]);
+
+  return (
+    <div className="pending-list">
+      {pending.map((attendee) => (
+        <PendingItem
+          key={attendee.id}
+          attendee={attendee}
+          isEditing={editingId === attendee.id}
+          onStartEdit={() => setEditingId(attendee.id)}
+          onCancelEdit={() => setEditingId(null)}
+          onSave={(data) => {
+            onUpdate(attendee.id, data);
+            setEditingId(null);
+          }}
+          onRemove={() => onRemove(attendee.id)}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -375,6 +514,14 @@ export default function BadgeGenerator() {
     setPending((prev) => prev.filter((attendee) => attendee.id !== id));
   };
 
+  // Fix a mistake on a pending attendee (name, sex, from, room) without
+  // removing and re-registering them.
+  const updatePending = (id, data) => {
+    setPending((prev) =>
+      prev.map((attendee) => (attendee.id === id ? { ...attendee, ...data } : attendee))
+    );
+  };
+
   const pendingSlots = useMemo(() => {
     const slots = [...pending];
     while (slots.length < SLOTS) slots.push(null);
@@ -461,16 +608,10 @@ export default function BadgeGenerator() {
             ))}
 
             {pending.length > 0 && (
-              <div className="pending-list">
-                {pending.map((attendee) => (
-                  <div key={attendee.id} className="pending-item">
-                    <span>{attendee.fullName}</span>
-                    <button onClick={() => removePending(attendee.id)} aria-label="Remove">
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
+              <>
+                <p className="pending-list-hint">Click a name below to fix a typo.</p>
+                <PendingList pending={pending} onRemove={removePending} onUpdate={updatePending} />
+              </>
             )}
           </aside>
         </div>
@@ -679,9 +820,67 @@ body {
 .sheet-tab:hover { background: rgba(255,255,255,0.08); }
 .sheet-tab.active { border-color: var(--accent); background: rgba(183,92,39,0.16); }
 .sheet-tab .count { font-weight: 500; color: var(--ink-dim); }
-.pending-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
-.pending-item { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border); border-radius: 8px; padding: 7px 9px; color: var(--ink); }
-.pending-item button { border: none; background: transparent; color: #ff8a8a; cursor: pointer; font-size: 12px; }
+.pending-list-hint { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-dim); }
+.pending-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.pending-item { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border); border-radius: 8px; padding: 4px 4px 4px 9px; color: var(--ink); }
+.pending-item-name {
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 5px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pending-item-name:hover { background: rgba(183,92,39,0.16); color: var(--gold-soft); }
+.pending-item-remove { border: none; background: transparent; color: #ff8a8a; cursor: pointer; font-size: 12px; padding: 6px 8px; border-radius: 6px; }
+.pending-item-remove:hover { background: rgba(255,138,138,0.12); }
+
+.pending-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: rgba(183, 92, 39, 0.08);
+}
+.edit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.edit-input {
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(255,255,255,0.06);
+  width: 100%;
+}
+.edit-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.edit-input option { background: var(--navy-mid); color: var(--ink); }
+.edit-actions { display: flex; gap: 6px; margin-top: 2px; }
+.btn-mini {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.btn-mini-save { background: linear-gradient(135deg, var(--gold-soft), var(--gold)); color: #21170a; }
+.btn-mini-save:hover { filter: brightness(1.06); }
+.btn-mini-cancel { background: transparent; border-color: var(--glass-border); color: var(--ink-dim); }
+.btn-mini-cancel:hover { color: var(--ink); border-color: rgba(255,255,255,0.3); }
 
 .preview-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin: 22px 0 12px; padding: 18px 22px; flex-wrap: wrap; color: var(--ink); }
 .preview-toolbar .muted { color: var(--ink-dim); font-weight: 400; font-size: 13px; }
