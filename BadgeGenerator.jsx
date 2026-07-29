@@ -28,9 +28,9 @@ const nextId = () => uid++;
 const DEFAULT_BADGE_BG = badgeTemplate;
 
 const FIELDS = [
-  { key: "fullName", label: "Full name", left: 60, width: 130, bottom: 58 },
-  { key: "sex", label: "Sex", left: 60, width: 130, bottom: 38 },
-  { key: "from", label: "From", left: 190, width: 130, bottom: 58 },
+  { key: "fullName", label: "Full name", left: 58, width: 130, bottom: 60 },
+  { key: "sex", label: "Sex", left: 58, width: 130, bottom: 40 },
+  { key: "from", label: "From", left: 190, width: 130, bottom: 60 },
   { key: "roomNumber", label: "Room number", left: 190, width: 130, bottom: 40 },
 ];
 
@@ -71,6 +71,76 @@ function buildQrPayload(attendee) {
     `Room: ${attendee.roomNumber || "-"}`,
     `Badge ID: ${attendee.id ?? "-"}`,
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Excel import — parsed entirely in the browser with SheetJS, no backend.
+// Columns are matched fuzzily by header text so "Room", "Room Number", and
+// "Room #" all work. Only Full Name is required — Sex, From, and Room
+// Number are all optional, since not every roster includes room numbers.
+// This roster is shared by BOTH card types: badge cards and meal cards
+// both read from the same pending/sheets state, so an imported roster
+// works for whichever card type is currently selected (and if you switch
+// card types afterwards, the same attendees carry over automatically).
+// ---------------------------------------------------------------------------
+function normalizeHeader(h) {
+  return String(h || "").trim().toLowerCase();
+}
+
+function detectColumn(headerRow, candidates) {
+  for (let i = 0; i < headerRow.length; i++) {
+    const h = normalizeHeader(headerRow[i]);
+    if (candidates.some((c) => h.includes(c))) return i;
+  }
+  return -1;
+}
+
+function parseParticipantsFromWorkbook(workbook) {
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, defval: "" });
+
+  if (!rows || rows.length === 0) {
+    return { error: "That Excel file looks empty — there's no data to import." };
+  }
+
+  const headerRow = rows[0].map(String);
+  const nameCol = detectColumn(headerRow, ["full name", "name"]);
+  const sexCol = detectColumn(headerRow, ["sex", "gender"]);
+  const fromCol = detectColumn(headerRow, ["from", "country", "origin", "sebeka", "province"]);
+  const roomCol = detectColumn(headerRow, ["room"]);
+
+  if (nameCol === -1) {
+    return {
+      error: "Couldn't find a Name column. The first row needs a 'Full Name' (or 'Name') header.",
+    };
+  }
+
+  const participants = [];
+  const skipped = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const fullName = String(row[nameCol] ?? "").trim();
+    const roomNumber = roomCol !== -1 ? String(row[roomCol] ?? "").trim() : "";
+    const sex = sexCol !== -1 ? String(row[sexCol] ?? "").trim() : "";
+    const from = fromCol !== -1 ? String(row[fromCol] ?? "").trim() : "";
+
+    const rowIsBlank = !fullName && !roomNumber && !sex && !from;
+    if (rowIsBlank) continue;
+
+    if (!fullName) {
+      skipped.push({ row: i + 1, reason: "missing name" });
+      continue;
+    }
+    participants.push({ fullName, sex, from, roomNumber });
+  }
+
+  if (participants.length === 0) {
+    return { error: "No valid rows were found — every row is missing a name." };
+  }
+
+  return { participants, skipped };
 }
 
 function CropMarks() {
@@ -342,6 +412,251 @@ function RegistrationForm({ onRegister, fillTarget }) {
   );
 }
 
+// Drag-and-drop (or click-to-browse) Excel importer. Parsing happens
+// entirely client-side via SheetJS — nothing is uploaded anywhere.
+// A "download sample template" link is included so people importing a
+// roster for the first time know the exact column headers to use.
+function ExcelImportPanel({ onFile, onDownloadTemplate }) {
+  const [dragActive, setDragActive] = useState(false);
+  const inputRef = useRef(null);
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    setDragActive(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) onFile(file);
+  };
+
+  return (
+    <div className="glass-panel reg-form">
+      <div className="panel-head">
+        <span className="panel-eyebrow">Bulk import</span>
+        <h2>Upload participant Excel</h2>
+      </div>
+      <p className="panel-hint">
+        Columns: Full name, Sex, From, Room number (first row = headers). Works for both badge
+        and meal cards — rows fill the current sheet first, then automatically continue onto new
+        sheets, {SLOTS} per page.
+      </p>
+      <div
+        className={"dropzone" + (dragActive ? " dropzone-active" : "")}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragActive(true);
+        }}
+        onDragLeave={() => setDragActive(false)}
+        onDrop={handleDrop}
+        onClick={() => inputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+      >
+        <span>Drag &amp; drop an .xlsx file here, or click to browse</span>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,.xls"
+          className="dropzone-input"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) onFile(file);
+            event.target.value = "";
+          }}
+        />
+      </div>
+      {onDownloadTemplate && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-template-download"
+          onClick={onDownloadTemplate}
+        >
+          Download sample template (.xlsx)
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Inline "click name to edit" row used inside the attendee list. Clicking
+// the name swaps the row for a small edit form (name, sex, from, room) so
+// typos caught after registration — or after import — can be fixed without
+// removing and re-adding the attendee.
+function PendingItem({ attendee, isEditing, onStartEdit, onCancelEdit, onSave, onRemove }) {
+  const [draft, setDraft] = useState(attendee);
+
+  useEffect(() => {
+    if (isEditing) setDraft(attendee);
+  }, [isEditing, attendee]);
+
+  if (!isEditing) {
+    return (
+      <div className="pending-item">
+        <button
+          type="button"
+          className="pending-item-name"
+          onClick={onStartEdit}
+          title="Click to edit this attendee"
+        >
+          {attendee.fullName || "(no name)"}
+        </button>
+        <button
+          type="button"
+          className="pending-item-remove"
+          onClick={onRemove}
+          aria-label="Remove attendee"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  }
+
+  const submit = (event) => {
+    event.preventDefault();
+    if (!draft.fullName.trim()) return;
+    onSave({
+      fullName: draft.fullName.trim(),
+      sex: draft.sex,
+      from: draft.from,
+      roomNumber: draft.roomNumber.trim(),
+    });
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === "Escape") onCancelEdit();
+  };
+
+  return (
+    <form className="pending-edit-form" onSubmit={submit} onKeyDown={onKeyDown}>
+      <input
+        className="edit-input"
+        value={draft.fullName}
+        onChange={(event) => setDraft((d) => ({ ...d, fullName: event.target.value }))}
+        placeholder="Full name"
+        autoFocus
+      />
+      <div className="edit-row">
+        <select
+          className="edit-input"
+          value={draft.sex}
+          onChange={(event) => setDraft((d) => ({ ...d, sex: event.target.value }))}
+        >
+          <option value="">ይምረጡ</option>
+          <option value="ወንድ">ወንድ</option>
+          <option value="ሴት">ሴት</option>
+        </select>
+        <input
+          className="edit-input"
+          value={draft.roomNumber}
+          onChange={(event) => setDraft((d) => ({ ...d, roomNumber: event.target.value }))}
+          placeholder="Room"
+        />
+      </div>
+      <select
+        className="edit-input"
+        value={draft.from}
+        onChange={(event) => setDraft((d) => ({ ...d, from: event.target.value }))}
+      >
+        {FROM_OPTIONS.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <div className="edit-actions">
+        <button type="submit" className="btn-mini btn-mini-save">
+          Save
+        </button>
+        <button type="button" className="btn-mini btn-mini-cancel" onClick={onCancelEdit}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// Shows the attendee list for whichever tab is selected in the sidebar —
+// the in-progress sheet OR any sealed sheet. Same click-to-edit behavior
+// everywhere, and it drives both badge and meal card output since they
+// share one roster. Removing an attendee always asks for confirmation
+// first, since it can't be undone from here.
+function AttendeeListPanel({
+  selected,
+  pending,
+  sheets,
+  onUpdatePending,
+  onRemovePending,
+  onUpdateSheetAttendee,
+  onRemoveSheetAttendee,
+  onDeleteSheet,
+}) {
+  const isPending = selected === "pending";
+  const items = isPending ? pending : sheets[selected] || [];
+  const filledCount = items.filter(Boolean).length;
+  const [editingId, setEditingId] = useState(null);
+
+  useEffect(() => {
+    setEditingId(null);
+  }, [selected]);
+
+  const handleRemove = (attendee) => {
+    const label = attendee.fullName || "this attendee";
+    if (!window.confirm(`Remove ${label}? This can't be undone.`)) return;
+    if (isPending) onRemovePending(attendee.id);
+    else onRemoveSheetAttendee(selected, attendee.id);
+  };
+
+  const handleSave = (attendee, data) => {
+    if (isPending) onUpdatePending(attendee.id, data);
+    else onUpdateSheetAttendee(selected, attendee.id, data);
+    setEditingId(null);
+  };
+
+  return (
+    <div className="attendee-list-panel">
+      <div className="attendee-list-head">
+        <span className="attendee-list-title">
+          {isPending ? "Attendees in progress" : `Attendees on Sheet ${selected + 1}`}
+        </span>
+        <span className="attendee-list-count">{filledCount}/{SLOTS}</span>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="attendee-list-empty">No attendees added yet.</p>
+      ) : (
+        <div className="pending-list">
+          {items.map((attendee, index) =>
+            attendee ? (
+              <PendingItem
+                key={attendee.id}
+                attendee={attendee}
+                isEditing={editingId === attendee.id}
+                onStartEdit={() => setEditingId(attendee.id)}
+                onCancelEdit={() => setEditingId(null)}
+                onSave={(data) => handleSave(attendee, data)}
+                onRemove={() => handleRemove(attendee)}
+              />
+            ) : (
+              <div key={`empty-${index}`} className="pending-item pending-item-empty">
+                <span className="pending-item-empty-label">Empty slot</span>
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {!isPending && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-danger-ghost"
+          onClick={() => onDeleteSheet(selected)}
+        >
+          Delete this sheet
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TemplatePanel({ background, setBackground }) {
   const handleUpload = (event) => {
     const file = event.target.files?.[0];
@@ -372,6 +687,47 @@ function TemplatePanel({ background, setBackground }) {
       <button type="button" className="btn btn-ghost" onClick={resetDefault}>
         Reset to default template
       </button>
+    </div>
+  );
+}
+
+function MealSettingsPanel({ eventName, setEventName, logo, setLogo }) {
+  const handleLogoUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setLogo(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const useDefaultLogo = () => setLogo(sodoConferenceLogo);
+
+  return (
+    <div className="glass-panel reg-form template-form">
+      <div className="panel-head">
+        <span className="panel-eyebrow">Meal card</span>
+        <h2>Event &amp; logo</h2>
+      </div>
+      <label className="f-label">
+        Event name
+        <input
+          value={eventName}
+          onChange={(event) => setEventName(event.target.value)}
+          placeholder="Sodo Stadium Conference 2026"
+        />
+      </label>
+      <div className="bg-preview logo-only-preview">
+        <img src={logo || sodoConferenceLogo} alt="meal card logo preview" />
+      </div>
+      <label className="f-label file-label">
+        Upload replacement logo (optional)
+        <input type="file" accept="image/*" onChange={handleLogoUpload} />
+      </label>
+      {logo !== sodoConferenceLogo && (
+        <button type="button" className="btn btn-ghost" onClick={useDefaultLogo}>
+          Use default logo
+        </button>
+      )}
     </div>
   );
 }
@@ -445,6 +801,8 @@ export default function CardStudio() {
   const [page, setPage] = useState("home");
   const [cardType, setCardType] = useState("badge"); // "badge" | "meal"
   const [background, setBackground] = useState(DEFAULT_BADGE_BG);
+  const [mealEventName, setMealEventName] = useState(CONFERENCE_NAME);
+  const [mealLogo, setMealLogo] = useState(sodoConferenceLogo);
   const [pending, setPending] = useState([]);
   const [sheets, setSheets] = useState([]);
   const [selected, setSelected] = useState("pending");
@@ -542,6 +900,90 @@ export default function CardStudio() {
       setSelected("pending");
       return next;
     });
+  };
+
+  // Bulk-register everyone from an imported Excel file. Fills the
+  // in-progress sheet first, then seals new sheets of SLOTS as needed —
+  // same rule as adding one at a time, just looped.
+  const bulkRegister = (rows) => {
+    const newAttendees = rows.map((row) => ({ id: nextId(), ...row }));
+    let currentPending = [...pending];
+    const newSheets = [];
+    for (const attendee of newAttendees) {
+      currentPending.push(attendee);
+      if (currentPending.length === SLOTS) {
+        newSheets.push(currentPending);
+        currentPending = [];
+      }
+    }
+    if (newSheets.length > 0) {
+      setSheets((prev) => {
+        const updated = [...prev, ...newSheets];
+        setSelected(updated.length - 1);
+        return updated;
+      });
+    } else {
+      setSelected("pending");
+    }
+    setPending(currentPending);
+  };
+
+  const handleExcelFile = async (file) => {
+    if (!/\.(xlsx|xls)$/i.test(file.name)) {
+      notify("error", "Please upload a .xlsx or .xls file.");
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const result = parseParticipantsFromWorkbook(workbook);
+      if (result.error) {
+        notify("error", result.error);
+        return;
+      }
+      bulkRegister(result.participants);
+      const count = result.participants.length;
+      const skippedNote = result.skipped.length
+        ? ` (${result.skipped.length} row${result.skipped.length === 1 ? "" : "s"} skipped — missing name or room number)`
+        : "";
+      notify("success", `Imported ${count} participant${count === 1 ? "" : "s"}${skippedNote}.`);
+    } catch (err) {
+      notify("error", "Couldn't read that file. Please check it's a valid Excel file.");
+    }
+  };
+
+  // Downloadable .xlsx with the exact headers the importer expects, plus
+  // one example row — mainly to cut down on rejected imports from
+  // mismatched or missing column names.
+  const downloadSampleTemplate = () => {
+    const sample = [
+      { "Full Name": "Meti Black", Sex: "ወንድ", From: "ደቡብ ሰበካ", "Room Number": "204" },
+    ];
+    const worksheet = XLSX.utils.json_to_sheet(sample);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Template");
+    XLSX.writeFile(workbook, "participant-import-template.xlsx");
+  };
+
+  // Exports every registered attendee (in-progress + all sealed sheets) to
+  // an .xlsx file — a quick backup/handoff option independent of Reset all.
+  const exportRosterToExcel = () => {
+    const allAttendees = [...sheets.flat().filter(Boolean), ...pending];
+    if (allAttendees.length === 0) {
+      notify("error", "No attendees to export yet.");
+      return;
+    }
+    const data = allAttendees.map((a) => ({
+      "Full Name": a.fullName,
+      Sex: a.sex,
+      From: a.from,
+      "Room Number": a.roomNumber,
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Roster");
+    XLSX.writeFile(workbook, "attendee-roster.xlsx");
+    notify("success", `Exported ${allAttendees.length} attendee${allAttendees.length === 1 ? "" : "s"}.`);
   };
 
   const clearAll = () => {
@@ -668,8 +1110,19 @@ export default function CardStudio() {
 
         <div className="layout">
           <div className="form-stack">
-            <RegistrationForm onRegister={register} pendingCount={pending.length} />
-            <TemplatePanel background={background} setBackground={setBackground} />
+            <CardTypeToggle cardType={cardType} setCardType={setCardType} />
+            <RegistrationForm onRegister={register} fillTarget={fillTarget} />
+            <ExcelImportPanel onFile={handleExcelFile} onDownloadTemplate={downloadSampleTemplate} />
+            {cardType === "badge" ? (
+              <TemplatePanel background={background} setBackground={setBackground} />
+            ) : (
+              <MealSettingsPanel
+                eventName={mealEventName}
+                setEventName={setMealEventName}
+                logo={mealLogo}
+                setLogo={setMealLogo}
+              />
+            )}
           </div>
 
           <aside className="glass-panel sheets-panel">
@@ -1224,6 +1677,67 @@ body {
   line-height: 1.05;
   text-shadow: 0 0 2px rgba(255,255,255,0.45);
 }
+
+/* ---------- Meal card artwork (fully coded, no background template) ---------- */
+.mealcard-inner {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  border:2pt solid #ba7b23;
+  border-radius: 2pt;
+  padding: 7pt 8pt;
+  display: flex;
+  flex-direction: column;
+  gap: 4pt;
+  font-family: var(--font-body);
+  color: #2b2622;
+  overflow: hidden;
+}
+.mealcard-header { display: flex; align-items: center; gap: 7pt; }
+.mealcard-logo {
+  width: 30pt; height: 30pt; border-radius: 4pt; overflow: hidden; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; background: #f3ede6;
+}
+.mealcard-logo img { width: 100%; height: 100%; object-fit: contain; }
+.mealcard-logo-fallback { font-size: 6pt; font-weight: 700; color: #b3a99b; letter-spacing: 0.06em; }
+.mealcard-event { flex: 1; display: flex; flex-direction: column; gap: 1.5pt; min-width: 0; }
+.mealcard-event-name {
+  font-family: var(--font-display); font-size: 7.5pt; font-weight: 700; color: var(--brand-700);
+  text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mealcard-name { font-family: 'Balderasu', var(--font-body); font-size: 12pt; font-weight: 700; color: #211a12; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;padding-top: 8px; }
+.mealcard-qr { flex-shrink: 0;
+ }
+.mealcard-meta {
+  display: flex; gap: 10pt; font-size: 7.5pt; font-weight: 600; color: #6b6257;
+  padding-bottom: 3pt;
+  padding-left: 45px;
+   border-bottom: 0.5pt solid rgb(103, 77, 37);
+}
+.meal-table { display: flex; flex-direction: column; gap: 2.5pt; margin-top: 3pt; flex: 1; justify-content: center; }
+.meal-row { display: grid; grid-template-columns: 32pt repeat(7, 1fr); gap: 2pt; align-items: center; min-height: 13pt; }
+.meal-row-head .meal-day-head {
+  font-family: 'Balderasu', var(--font-amharic);
+  font-size: 6pt;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.05;
+  color: #9b6621;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.meal-label {
+  font-family: 'Balderasu', var(--font-amharic);
+  font-size: 7.2pt;
+  font-weight: 700;
+  color: #4a4339;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 16px;
+}
+.meal-checkbox { width: 14pt; height: 12pt; border: 0.9pt solid #9b9384; border-radius: 1.5pt; justify-self: center; background: #fff; }
 .crop { position: absolute; width: 0; height: 0; pointer-events: none; }
 .crop-h, .crop-v { position: absolute; background: var(--crop); }
 .crop-h { height: 0.5pt; }
