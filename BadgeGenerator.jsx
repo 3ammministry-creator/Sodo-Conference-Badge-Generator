@@ -60,6 +60,14 @@ const QR_SIZE = 50; // pt, ~16mm square
 const QR_LEFT = 180;
 const QR_BOTTOM = 80;
 
+// Meal card QR placement — independent of the badge QR above, since the
+// meal card is fully coded (no background artwork) and the QR now floats
+// on its own instead of living inside the header row. Positioned from the
+// card's top-right corner; tweak freely.
+const MEAL_QR_SIZE = 43; // pt
+const MEAL_QR_TOP = 7; // pt from the card's top edge
+const MEAL_QR_RIGHT = 8; // pt from the card's right edge
+
 // Plain-text payload encoded into the QR. Any standard QR scanner
 // (camera app, dedicated scanner, etc.) will show this directly —
 // no server, app, or lookup required.
@@ -200,7 +208,10 @@ function Badge({ attendee, background }) {
 // ---------------------------------------------------------------------------
 // Meal card (fully coded — logo, event name, attendee info, and a compact
 // breakfast/lunch/dinner x Mon–Sun checkbox grid). No background artwork
-// needed, so it works the moment you register someone.
+// needed, so it works the moment you register someone. The QR code is an
+// independently-positioned overlay (see MEAL_QR_SIZE/MEAL_QR_TOP/
+// MEAL_QR_RIGHT above) rather than living inside the header row, so its
+// size and placement can be tuned separately from the badge QR.
 // ---------------------------------------------------------------------------
 function MealCard({ attendee, eventName, logo }) {
   const empty = !attendee;
@@ -216,18 +227,6 @@ function MealCard({ attendee, eventName, logo }) {
             <span className="mealcard-event-name">{eventName || "Event"}</span>
             {attendee && <span className="mealcard-name">{attendee.fullName}</span>}
           </div>
-          {attendee && (
-            <div className="mealcard-qr">
-              <QRCodeSVG
-                value={buildQrPayload(attendee)}
-                size={30}
-                level="M"
-                bgColor="#ffffff"
-                fgColor="#1a1a1a"
-                marginSize={0}
-              />
-            </div>
-          )}
         </div>
 
         {attendee && (
@@ -258,6 +257,27 @@ function MealCard({ attendee, eventName, logo }) {
             </div>
           ))}
         </div>
+
+        {attendee && (
+          <div
+            className="qr-overlay"
+            style={{
+              top: `${MEAL_QR_TOP}pt`,
+              right: `${MEAL_QR_RIGHT}pt`,
+              width: `${MEAL_QR_SIZE}pt`,
+              height: `${MEAL_QR_SIZE}pt`,
+            }}
+          >
+            <QRCodeSVG
+              value={buildQrPayload(attendee)}
+              size={MEAL_QR_SIZE}
+              level="M"
+              bgColor="#ffffff"
+              fgColor="#1a1a1a"
+              marginSize={0}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1663,6 +1683,7 @@ body {
   padding: 2pt;
   border-radius: 2pt;
   box-shadow: 0 0 0 0.5pt rgba(0,0,0,0.08);
+  z-index: 2;
 }
 .qr-overlay svg { display: block; }
 .field-text {
@@ -1706,8 +1727,6 @@ body {
   text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mealcard-name { font-family: 'Balderasu', var(--font-body); font-size: 12pt; font-weight: 700; color: #211a12; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;padding-top: 8px; }
-.mealcard-qr { flex-shrink: 0;
- }
 .mealcard-meta {
   display: flex; gap: 10pt; font-size: 7.5pt; font-weight: 600; color: #6b6257;
   padding-bottom: 3pt;
