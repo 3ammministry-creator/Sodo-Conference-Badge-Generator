@@ -1,8 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import * as XLSX from "xlsx";
 import badgeTemplate from "./Assets/Images/Badge.png";
 import logoMark from "./Assets/Images/Logo Mark.png";
+import sodoConferenceLogo from "./Assets/Images/Sodo Conference Logo.png";
 import badgeFont from "./Assets/Font/Bela_Bereka_6a62aa4ee7.ttf";
+import balderasuFont from "./Assets/Font/Balderasu_Regular.ttf";
 
 const PAGE_W = 595.28;
 const PAGE_H = 851.89;
@@ -16,7 +19,8 @@ const ROWS = 4;
 const SLOTS = COLS * ROWS;
 
 const CONFERENCE_NAME = "Sodo Stadium Conference 2026";
-const CONFERENCE_TAGLINE = "Badge Studio — register attendees and print stadium-ready badge sheets in minutes.";
+const CONFERENCE_TAGLINE =
+  "Card Studio — register attendees once, then print badges and meal cards from the same roster.";
 
 let uid = 1;
 const nextId = () => uid++;
@@ -26,7 +30,7 @@ const DEFAULT_BADGE_BG = badgeTemplate;
 const FIELDS = [
   { key: "fullName", label: "Full name", left: 58, width: 130, bottom: 60 },
   { key: "sex", label: "Sex", left: 58, width: 130, bottom: 40 },
-  { key: "from", label: "From", left: 191, width: 130, bottom: 60 },
+  { key: "from", label: "From", left: 190, width: 130, bottom: 60 },
   { key: "roomNumber", label: "Room number", left: 190, width: 130, bottom: 40 },
 ];
 
@@ -44,6 +48,9 @@ const FROM_OPTIONS = [
   "ሰሜን ሰበካ",
   "ሰሜን ምስራቅ ሰበካ",
 ];
+
+const MEAL_DAYS = ["እሁድ", "ሰኞ", "ማክሰኞ", "ረቡዕ", "ሐሙስ", "ዓርብ", "ቅዳሜ"];
+const MEAL_TYPES = ["ቁርስ", "ምሳ", "እራት"];
 
 // QR code placement, in the same pt units/coordinate space as FIELDS
 // (left/bottom measured from the badge's own left/bottom edge). Tweak
@@ -66,6 +73,76 @@ function buildQrPayload(attendee) {
   ].join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Excel import — parsed entirely in the browser with SheetJS, no backend.
+// Columns are matched fuzzily by header text so "Room", "Room Number", and
+// "Room #" all work. Only Full Name is required — Sex, From, and Room
+// Number are all optional, since not every roster includes room numbers.
+// This roster is shared by BOTH card types: badge cards and meal cards
+// both read from the same pending/sheets state, so an imported roster
+// works for whichever card type is currently selected (and if you switch
+// card types afterwards, the same attendees carry over automatically).
+// ---------------------------------------------------------------------------
+function normalizeHeader(h) {
+  return String(h || "").trim().toLowerCase();
+}
+
+function detectColumn(headerRow, candidates) {
+  for (let i = 0; i < headerRow.length; i++) {
+    const h = normalizeHeader(headerRow[i]);
+    if (candidates.some((c) => h.includes(c))) return i;
+  }
+  return -1;
+}
+
+function parseParticipantsFromWorkbook(workbook) {
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, defval: "" });
+
+  if (!rows || rows.length === 0) {
+    return { error: "That Excel file looks empty — there's no data to import." };
+  }
+
+  const headerRow = rows[0].map(String);
+  const nameCol = detectColumn(headerRow, ["full name", "name"]);
+  const sexCol = detectColumn(headerRow, ["sex", "gender"]);
+  const fromCol = detectColumn(headerRow, ["from", "country", "origin", "sebeka", "province"]);
+  const roomCol = detectColumn(headerRow, ["room"]);
+
+  if (nameCol === -1) {
+    return {
+      error: "Couldn't find a Name column. The first row needs a 'Full Name' (or 'Name') header.",
+    };
+  }
+
+  const participants = [];
+  const skipped = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const fullName = String(row[nameCol] ?? "").trim();
+    const roomNumber = roomCol !== -1 ? String(row[roomCol] ?? "").trim() : "";
+    const sex = sexCol !== -1 ? String(row[sexCol] ?? "").trim() : "";
+    const from = fromCol !== -1 ? String(row[fromCol] ?? "").trim() : "";
+
+    const rowIsBlank = !fullName && !roomNumber && !sex && !from;
+    if (rowIsBlank) continue;
+
+    if (!fullName) {
+      skipped.push({ row: i + 1, reason: "missing name" });
+      continue;
+    }
+    participants.push({ fullName, sex, from, roomNumber });
+  }
+
+  if (participants.length === 0) {
+    return { error: "No valid rows were found — every row is missing a name." };
+  }
+
+  return { participants, skipped };
+}
+
 function CropMarks() {
   const len = .5;
   const corners = ["tl", "tr", "bl", "br"];
@@ -81,6 +158,9 @@ function CropMarks() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Badge card (photo-background template with text/QR overlaid on top)
+// ---------------------------------------------------------------------------
 function Badge({ attendee, background }) {
   const empty = !attendee;
   return (
@@ -117,13 +197,83 @@ function Badge({ attendee, background }) {
   );
 }
 
-function A4Sheet({ slots, background, sheetIndex }) {
+// ---------------------------------------------------------------------------
+// Meal card (fully coded — logo, event name, attendee info, and a compact
+// breakfast/lunch/dinner x Mon–Sun checkbox grid). No background artwork
+// needed, so it works the moment you register someone.
+// ---------------------------------------------------------------------------
+function MealCard({ attendee, eventName, logo }) {
+  const empty = !attendee;
+  return (
+    <div className={"badge mealcard" + (empty ? " badge-empty" : "")}>
+      <CropMarks />
+      <div className="mealcard-inner">
+        <div className="mealcard-header">
+          <div className="mealcard-logo">
+            {logo ? <img src={logo} alt="ministry logo" /> : <span className="mealcard-logo-fallback">LOGO</span>}
+          </div>
+          <div className="mealcard-event">
+            <span className="mealcard-event-name">{eventName || "Event"}</span>
+            {attendee && <span className="mealcard-name">{attendee.fullName}</span>}
+          </div>
+          {attendee && (
+            <div className="mealcard-qr">
+              <QRCodeSVG
+                value={buildQrPayload(attendee)}
+                size={30}
+                level="M"
+                bgColor="#ffffff"
+                fgColor="#1a1a1a"
+                marginSize={0}
+              />
+            </div>
+          )}
+        </div>
+
+        {attendee && (
+        <div className="mealcard-meta">
+  <span>{attendee.sex || "-"}</span>
+  <span> | </span>
+  <span>{attendee.from || "-"}</span>
+  <span> | </span>
+  <span>ከፍል {attendee.roomNumber || "-"}</span>
+</div>
+        )}
+
+        <div className="meal-table">
+          <div className="meal-row meal-row-head">
+            <span className="meal-label" />
+            {MEAL_DAYS.map((day) => (
+              <span key={day} className="meal-day-head">
+                {day}
+              </span>
+            ))}
+          </div>
+          {MEAL_TYPES.map((meal) => (
+            <div key={meal} className="meal-row">
+              <span className="meal-label">{meal}</span>
+              {MEAL_DAYS.map((day) => (
+                <span key={day} className="meal-checkbox" />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function A4Sheet({ slots, cardType, background, mealEventName, mealLogo, sheetIndex }) {
   return (
     <div className="a4-page" data-sheet-index={sheetIndex}>
       <div className="a4-grid">
-        {slots.map((attendee, index) => (
-          <Badge key={index} attendee={attendee} background={background} />
-        ))}
+        {slots.map((attendee, index) =>
+          cardType === "meal" ? (
+            <MealCard key={index} attendee={attendee} eventName={mealEventName} logo={mealLogo} />
+          ) : (
+            <Badge key={index} attendee={attendee} background={background} />
+          )
+        )}
       </div>
     </div>
   );
@@ -139,7 +289,41 @@ function SlotProgress({ filled, total }) {
   );
 }
 
-function RegistrationForm({ onRegister, pendingCount }) {
+function CardTypeToggle({ cardType, setCardType }) {
+  return (
+    <div className="glass-panel card-type-panel">
+      <div className="panel-head">
+        <span className="panel-eyebrow">Output</span>
+        <h2>What are you printing?</h2>
+      </div>
+      <div className="card-type-toggle" role="tablist" aria-label="Card type">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={cardType === "badge"}
+          className={"card-type-btn" + (cardType === "badge" ? " active" : "")}
+          onClick={() => setCardType("badge")}
+        >
+          Badge cards
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={cardType === "meal"}
+          className={"card-type-btn" + (cardType === "meal" ? " active" : "")}
+          onClick={() => setCardType("meal")}
+        >
+          Meal cards
+        </button>
+      </div>
+      <p className="panel-hint">
+        Same roster either way — switch anytime, your attendees and sheets don't change.
+      </p>
+    </div>
+  );
+}
+
+function RegistrationForm({ onRegister, fillTarget }) {
   const [fullName, setFullName] = useState("");
   const [sex, setSex] = useState("");
   const [from, setFrom] = useState("");
@@ -167,12 +351,18 @@ function RegistrationForm({ onRegister, pendingCount }) {
         <h2>Register attendee</h2>
       </div>
 
+      {fillTarget.isSheet && (
+        <div className="fill-target-banner">
+          Filling an empty slot on <strong>{fillTarget.label}</strong>
+        </div>
+      )}
+
       <label className="f-label">
         Full name
         <input
           value={fullName}
           onChange={(event) => setFullName(event.target.value)}
-          placeholder="Jane Doe"
+          placeholder="Meti Black"
           required
         />
       </label>
@@ -197,7 +387,7 @@ function RegistrationForm({ onRegister, pendingCount }) {
       </div>
 
       <label className="f-label">
-        ሰበካ
+        ስምምነት/ደቡብ ሰበካ
         <select value={from} onChange={(event) => setFrom(event.target.value)}>
           {FROM_OPTIONS.map((option) => (
             <option key={option} value={option}>
@@ -208,24 +398,88 @@ function RegistrationForm({ onRegister, pendingCount }) {
       </label>
 
       <button type="submit" className="btn btn-primary">
-        Add to badge sheet
+        Add to card sheet
       </button>
 
       <div className="slot-hint-row">
-        <SlotProgress filled={pendingCount} total={SLOTS} />
+        <SlotProgress filled={fillTarget.filled} total={SLOTS} />
         <p className="slot-hint">
-          Slot {pendingCount + 1} of {SLOTS} on the current sheet
-          {pendingCount === SLOTS - 1 ? " — this completes the sheet!" : ""}
+          Slot {fillTarget.filled + 1} of {SLOTS} on {fillTarget.label}
+          {fillTarget.filled === SLOTS - 1 ? " — this completes the sheet!" : ""}
         </p>
       </div>
     </form>
   );
 }
 
-// Inline "click name to edit" row used inside the pending list. Clicking the
-// name swaps the row for a small edit form (name, sex, from, room) so typos
-// caught after registration can be fixed without removing and re-adding the
-// attendee.
+// Drag-and-drop (or click-to-browse) Excel importer. Parsing happens
+// entirely client-side via SheetJS — nothing is uploaded anywhere.
+// A "download sample template" link is included so people importing a
+// roster for the first time know the exact column headers to use.
+function ExcelImportPanel({ onFile, onDownloadTemplate }) {
+  const [dragActive, setDragActive] = useState(false);
+  const inputRef = useRef(null);
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    setDragActive(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) onFile(file);
+  };
+
+  return (
+    <div className="glass-panel reg-form">
+      <div className="panel-head">
+        <span className="panel-eyebrow">Bulk import</span>
+        <h2>Upload participant Excel</h2>
+      </div>
+      <p className="panel-hint">
+        Columns: Full name, Sex, From, Room number (first row = headers). Works for both badge
+        and meal cards — rows fill the current sheet first, then automatically continue onto new
+        sheets, {SLOTS} per page.
+      </p>
+      <div
+        className={"dropzone" + (dragActive ? " dropzone-active" : "")}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragActive(true);
+        }}
+        onDragLeave={() => setDragActive(false)}
+        onDrop={handleDrop}
+        onClick={() => inputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+      >
+        <span>Drag &amp; drop an .xlsx file here, or click to browse</span>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".xlsx,.xls"
+          className="dropzone-input"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) onFile(file);
+            event.target.value = "";
+          }}
+        />
+      </div>
+      {onDownloadTemplate && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-template-download"
+          onClick={onDownloadTemplate}
+        >
+          Download sample template (.xlsx)
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Inline "click name to edit" row used inside the attendee list. Clicking
+// the name swaps the row for a small edit form (name, sex, from, room) so
+// typos caught after registration — or after import — can be fixed without
+// removing and re-adding the attendee.
 function PendingItem({ attendee, isEditing, onStartEdit, onCancelEdit, onSave, onRemove }) {
   const [draft, setDraft] = useState(attendee);
 
@@ -322,9 +576,9 @@ function PendingItem({ attendee, isEditing, onStartEdit, onCancelEdit, onSave, o
 
 // Shows the attendee list for whichever tab is selected in the sidebar —
 // the in-progress sheet OR any sealed sheet. Same click-to-edit behavior
-// everywhere, so a typo caught after a sheet is sealed is just as easy to
-// fix as one caught before. Removing an attendee always asks for
-// confirmation first, since it can't be undone from here.
+// everywhere, and it drives both badge and meal card output since they
+// share one roster. Removing an attendee always asks for confirmation
+// first, since it can't be undone from here.
 function AttendeeListPanel({
   selected,
   pending,
@@ -340,8 +594,6 @@ function AttendeeListPanel({
   const filledCount = items.filter(Boolean).length;
   const [editingId, setEditingId] = useState(null);
 
-  // Switching tabs (or the underlying data changing shape) always closes
-  // any open edit form, so we never edit the wrong attendee by accident.
   useEffect(() => {
     setEditingId(null);
   }, [selected]);
@@ -419,8 +671,8 @@ function TemplatePanel({ background, setBackground }) {
   return (
     <div className="glass-panel reg-form template-form">
       <div className="panel-head">
-        <span className="panel-eyebrow">Optional</span>
-        <h2>Badge template</h2>
+        <span className="panel-eyebrow">Badge template</span>
+        <h2>Background artwork</h2>
       </div>
       <p className="panel-hint">
         Your badge artwork is used as-is; typed values are overlaid right onto its blank lines.
@@ -435,6 +687,47 @@ function TemplatePanel({ background, setBackground }) {
       <button type="button" className="btn btn-ghost" onClick={resetDefault}>
         Reset to default template
       </button>
+    </div>
+  );
+}
+
+function MealSettingsPanel({ eventName, setEventName, logo, setLogo }) {
+  const handleLogoUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setLogo(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const useDefaultLogo = () => setLogo(sodoConferenceLogo);
+
+  return (
+    <div className="glass-panel reg-form template-form">
+      <div className="panel-head">
+        <span className="panel-eyebrow">Meal card</span>
+        <h2>Event &amp; logo</h2>
+      </div>
+      <label className="f-label">
+        Event name
+        <input
+          value={eventName}
+          onChange={(event) => setEventName(event.target.value)}
+          placeholder="Sodo Stadium Conference 2026"
+        />
+      </label>
+      <div className="bg-preview logo-only-preview">
+        <img src={logo || sodoConferenceLogo} alt="meal card logo preview" />
+      </div>
+      <label className="f-label file-label">
+        Upload replacement logo (optional)
+        <input type="file" accept="image/*" onChange={handleLogoUpload} />
+      </label>
+      {logo !== sodoConferenceLogo && (
+        <button type="button" className="btn btn-ghost" onClick={useDefaultLogo}>
+          Use default logo
+        </button>
+      )}
     </div>
   );
 }
@@ -461,7 +754,7 @@ function HomePage({ onEnter, totalSheets, totalAttendees }) {
 
         <div className="home-hero">
           <div className="home-copy">
-            <span className="panel-eyebrow home-eyebrow">Attendee Badge Studio</span>
+            <span className="panel-eyebrow home-eyebrow">Badge &amp; Meal Card Studio</span>
             <h1 className="home-title">
               {CONFERENCE_NAME.split(" ").slice(0, -1).join(" ")}{" "}
               <span className="home-title-accent">{CONFERENCE_NAME.split(" ").slice(-1)}</span>
@@ -479,12 +772,12 @@ function HomePage({ onEnter, totalSheets, totalAttendees }) {
               </div>
               <div className="glass-chip">
                 <strong>{SLOTS}</strong>
-                <span>Badges per A4 sheet</span>
+                <span>Cards per A4 sheet</span>
               </div>
             </div>
 
             <button type="button" className="btn btn-primary btn-lg" onClick={onEnter}>
-              Enter Badge Studio →
+              Enter Card Studio →
             </button>
           </div>
 
@@ -504,12 +797,16 @@ function HomePage({ onEnter, totalSheets, totalAttendees }) {
   );
 }
 
-export default function BadgeGenerator() {
+export default function CardStudio() {
   const [page, setPage] = useState("home");
+  const [cardType, setCardType] = useState("badge"); // "badge" | "meal"
   const [background, setBackground] = useState(DEFAULT_BADGE_BG);
+  const [mealEventName, setMealEventName] = useState(CONFERENCE_NAME);
+  const [mealLogo, setMealLogo] = useState(sodoConferenceLogo);
   const [pending, setPending] = useState([]);
   const [sheets, setSheets] = useState([]);
   const [selected, setSelected] = useState("pending");
+  const [toast, setToast] = useState(null); // { type: 'success' | 'error', message }
 
   useEffect(() => {
     const link = document.createElement("link");
@@ -541,8 +838,55 @@ export default function BadgeGenerator() {
     };
   }, []);
 
+  // Toast auto-dismiss.
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const notify = (type, message) => setToast({ type, message });
+
+  // If a sealed sheet is selected and has an empty slot (from a previous
+  // removal), new registrations fill that slot in place — keeping the
+  // attendee on the sheet the user is actively looking at — instead of
+  // always starting/growing the in-progress sheet. Once that sheet has no
+  // empty slots left, registrations fall back to the normal flow below.
+  const targetSheetIndex =
+    selected !== "pending" && sheets[selected] && sheets[selected].some((a) => a === null)
+      ? selected
+      : null;
+
+  const fillTarget =
+    targetSheetIndex !== null
+      ? {
+          isSheet: true,
+          label: `Sheet ${targetSheetIndex + 1}`,
+          filled: sheets[targetSheetIndex].filter(Boolean).length,
+        }
+      : {
+          isSheet: false,
+          label: "the current sheet (in progress)",
+          filled: pending.length,
+        };
+
   const register = (data) => {
     const attendee = { id: nextId(), ...data };
+
+    if (targetSheetIndex !== null) {
+      setSheets((prev) =>
+        prev.map((sheet, idx) => {
+          if (idx !== targetSheetIndex) return sheet;
+          const emptyIndex = sheet.findIndex((a) => a === null);
+          if (emptyIndex === -1) return sheet;
+          const next = [...sheet];
+          next[emptyIndex] = attendee;
+          return next;
+        })
+      );
+      return;
+    }
+
     setPending((prev) => {
       const next = [...prev, attendee];
       if (next.length === SLOTS) {
@@ -556,6 +900,90 @@ export default function BadgeGenerator() {
       setSelected("pending");
       return next;
     });
+  };
+
+  // Bulk-register everyone from an imported Excel file. Fills the
+  // in-progress sheet first, then seals new sheets of SLOTS as needed —
+  // same rule as adding one at a time, just looped.
+  const bulkRegister = (rows) => {
+    const newAttendees = rows.map((row) => ({ id: nextId(), ...row }));
+    let currentPending = [...pending];
+    const newSheets = [];
+    for (const attendee of newAttendees) {
+      currentPending.push(attendee);
+      if (currentPending.length === SLOTS) {
+        newSheets.push(currentPending);
+        currentPending = [];
+      }
+    }
+    if (newSheets.length > 0) {
+      setSheets((prev) => {
+        const updated = [...prev, ...newSheets];
+        setSelected(updated.length - 1);
+        return updated;
+      });
+    } else {
+      setSelected("pending");
+    }
+    setPending(currentPending);
+  };
+
+  const handleExcelFile = async (file) => {
+    if (!/\.(xlsx|xls)$/i.test(file.name)) {
+      notify("error", "Please upload a .xlsx or .xls file.");
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const result = parseParticipantsFromWorkbook(workbook);
+      if (result.error) {
+        notify("error", result.error);
+        return;
+      }
+      bulkRegister(result.participants);
+      const count = result.participants.length;
+      const skippedNote = result.skipped.length
+        ? ` (${result.skipped.length} row${result.skipped.length === 1 ? "" : "s"} skipped — missing name or room number)`
+        : "";
+      notify("success", `Imported ${count} participant${count === 1 ? "" : "s"}${skippedNote}.`);
+    } catch (err) {
+      notify("error", "Couldn't read that file. Please check it's a valid Excel file.");
+    }
+  };
+
+  // Downloadable .xlsx with the exact headers the importer expects, plus
+  // one example row — mainly to cut down on rejected imports from
+  // mismatched or missing column names.
+  const downloadSampleTemplate = () => {
+    const sample = [
+      { "Full Name": "Meti Black", Sex: "ወንድ", From: "ደቡብ ሰበካ", "Room Number": "204" },
+    ];
+    const worksheet = XLSX.utils.json_to_sheet(sample);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Template");
+    XLSX.writeFile(workbook, "participant-import-template.xlsx");
+  };
+
+  // Exports every registered attendee (in-progress + all sealed sheets) to
+  // an .xlsx file — a quick backup/handoff option independent of Reset all.
+  const exportRosterToExcel = () => {
+    const allAttendees = [...sheets.flat().filter(Boolean), ...pending];
+    if (allAttendees.length === 0) {
+      notify("error", "No attendees to export yet.");
+      return;
+    }
+    const data = allAttendees.map((a) => ({
+      "Full Name": a.fullName,
+      Sex: a.sex,
+      From: a.from,
+      "Room Number": a.roomNumber,
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Roster");
+    XLSX.writeFile(workbook, "attendee-roster.xlsx");
+    notify("success", `Exported ${allAttendees.length} attendee${allAttendees.length === 1 ? "" : "s"}.`);
   };
 
   const clearAll = () => {
@@ -580,7 +1008,9 @@ export default function BadgeGenerator() {
   };
 
   // Same fix-in-place editing, but for an attendee on an already-sealed
-  // sheet. The slot position is preserved so the badge layout doesn't shift.
+  // sheet. The slot position is preserved so the badge/meal card layout
+  // doesn't shift, and it affects both badge and meal card output since
+  // they read from the same roster.
   const updateSheetAttendee = (sheetIndex, attendeeId, data) => {
     setSheets((prev) =>
       prev.map((sheet, idx) =>
@@ -592,7 +1022,7 @@ export default function BadgeGenerator() {
   };
 
   // Removing someone from a sealed sheet clears their slot rather than
-  // reflowing the rest of the sheet, so nobody else's badge position moves.
+  // reflowing the rest of the sheet, so nobody else's card position moves.
   const removeSheetAttendee = (sheetIndex, attendeeId) => {
     setSheets((prev) =>
       prev.map((sheet, idx) =>
@@ -636,6 +1066,7 @@ export default function BadgeGenerator() {
   const viewingIsSealed = selected !== "pending";
   const totalAttendees =
     sheets.reduce((sum, sheet) => sum + sheet.filter(Boolean).length, 0) + pending.length;
+  const cardLabel = cardType === "meal" ? "meal cards" : "badges";
 
   if (page === "home") {
     return (
@@ -655,11 +1086,17 @@ export default function BadgeGenerator() {
       <style>{CSS}</style>
 
       <div className="ui-layer no-print">
+        {toast && (
+          <div className={"toast toast-" + toast.type} role="status">
+            {toast.message}
+          </div>
+        )}
+
         <header className="topbar glass-panel">
           <div>
             <span className="panel-eyebrow">{CONFERENCE_NAME}</span>
-            <h1>Badge Studio</h1>
-            <p>Register attendees and generate an 8-up badge sheet ready for print or PDF export.</p>
+            <h1>Card Studio</h1>
+            <p>Register attendees once and generate an 8-up badge or meal card sheet ready for print or PDF export.</p>
           </div>
           <div className="topbar-actions">
             <button className="btn btn-ghost" onClick={() => setPage("home")}>
@@ -673,8 +1110,19 @@ export default function BadgeGenerator() {
 
         <div className="layout">
           <div className="form-stack">
-            <RegistrationForm onRegister={register} pendingCount={pending.length} />
-            <TemplatePanel background={background} setBackground={setBackground} />
+            <CardTypeToggle cardType={cardType} setCardType={setCardType} />
+            <RegistrationForm onRegister={register} fillTarget={fillTarget} />
+            <ExcelImportPanel onFile={handleExcelFile} onDownloadTemplate={downloadSampleTemplate} />
+            {cardType === "badge" ? (
+              <TemplatePanel background={background} setBackground={setBackground} />
+            ) : (
+              <MealSettingsPanel
+                eventName={mealEventName}
+                setEventName={setMealEventName}
+                logo={mealLogo}
+                setLogo={setMealLogo}
+              />
+            )}
           </div>
 
           <aside className="glass-panel sheets-panel">
@@ -682,6 +1130,13 @@ export default function BadgeGenerator() {
               <span className="panel-eyebrow">Overview</span>
               <h3>Sheets</h3>
             </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-export-roster"
+              onClick={exportRosterToExcel}
+            >
+              Export roster (.xlsx)
+            </button>
             <button
               className={"sheet-tab" + (selected === "pending" ? " active" : "")}
               onClick={() => setSelected("pending")}
@@ -728,7 +1183,7 @@ export default function BadgeGenerator() {
                 ? `Sheet ${selected + 1} of ${sheets.length}`
                 : "Current sheet (in progress)"}
             </strong>
-            <span className="muted"> — A4 portrait · 8 badges · 100% scale</span>
+            <span className="muted"> — A4 portrait · {SLOTS} {cardLabel} · 100% scale</span>
           </div>
           <div className="toolbar-actions">
             <button className="btn btn-secondary" onClick={printOne}>
@@ -742,7 +1197,14 @@ export default function BadgeGenerator() {
 
         <div className="preview-scroll">
           <div className="preview-scale">
-            <A4Sheet slots={viewingSheet} background={background} sheetIndex={selected} />
+            <A4Sheet
+              slots={viewingSheet}
+              cardType={cardType}
+              background={background}
+              mealEventName={mealEventName}
+              mealLogo={mealLogo}
+              sheetIndex={selected}
+            />
           </div>
         </div>
 
@@ -751,17 +1213,30 @@ export default function BadgeGenerator() {
 
       <div className="print-layer">
         <div data-print-scope="single">
-          <A4Sheet slots={viewingSheet} background={background} sheetIndex="print-single" />
+          <A4Sheet
+            slots={viewingSheet}
+            cardType={cardType}
+            background={background}
+            mealEventName={mealEventName}
+            mealLogo={mealLogo}
+            sheetIndex="print-single"
+          />
         </div>
         <div data-print-scope="all">
           {sheets.map((sheet, index) => (
-            <A4Sheet key={index} slots={sheet} background={background} sheetIndex={index} />
+            <A4Sheet
+              key={index}
+              slots={sheet}
+              cardType={cardType}
+              background={background}
+              mealEventName={mealEventName}
+              mealLogo={mealLogo}
+              sheetIndex={index}
+            />
           ))}
         </div>
       </div>
     </div>
-
-
   );
 }
 
@@ -796,13 +1271,18 @@ const CSS = `
   --glass-border: rgba(255, 255, 255, 0.10);
   --glass-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   --crop: #9a9a9a;
-  --font-amharic: 'Noto Sans Ethiopic', 'Nyala', sans-serif;
+  --font-amharic: 'Balderasu', 'Noto Sans Ethiopic', 'Nyala', sans-serif;
   --font-display: 'Sora', var(--font-amharic), sans-serif;
   --font-body: 'Inter', var(--font-amharic), sans-serif;
 }
 @font-face {
   font-family: 'Bela Bereka';
   src: url('${badgeFont}') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Balderasu';
+  src: url('${balderasuFont}') format('truetype');
   font-display: swap;
 }
 * { box-sizing: border-box; }
@@ -872,9 +1352,11 @@ body {
   border-color: var(--glass-border);
 }
 .btn-ghost:hover { color: var(--ink); border-color: rgba(255,255,255,0.3); }
+.btn-template-download { align-self: flex-start; font-size: 12px; padding: 8px 12px; }
+.btn-export-roster { width: 100%; font-size: 12.5px; padding: 8px 12px; }
 
 /* ---------- App shell ---------- */
-.ui-layer { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+.ui-layer { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; position: relative; }
 .topbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 22px; padding: 22px 26px; }
 .topbar h1 { font-family: var(--font-display); font-size: 26px; margin: 6px 0 4px; color: var(--ink); }
 .topbar p { margin: 0; color: var(--ink-dim); font-size: 14px; }
@@ -885,8 +1367,21 @@ body {
 .reg-form { padding: 24px; display: flex; flex-direction: column; gap: 12px; }
 .reg-form h2 { font-family: var(--font-display); font-size: 18px; margin: 0; color: var(--ink); }
 .panel-hint { margin: -6px 0 2px; font-size: 12px; color: var(--ink-dim); }
+.fill-target-banner {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--gold-soft);
+  background: rgba(183, 92, 39, 0.14);
+  border: 1px solid rgba(183, 92, 39, 0.35);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin: -2px 0 2px;
+}
+.fill-target-banner strong { color: var(--ink); }
 .bg-preview { border: 1px solid var(--glass-border); border-radius: 12px; overflow: hidden; background: rgba(0,0,0,0.2); }
 .bg-preview img { width: 100%; height: auto; display: block; }
+.logo-only-preview { padding: 10px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.06); }
+.logo-only-preview img { width: auto; max-width: 100%; max-height: 90px; }
 .f-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .f-label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--ink-dim); }
 .f-label input, .f-label select {
@@ -913,6 +1408,60 @@ body {
 .slot-dots { display: flex; gap: 6px; }
 .slot-dots .dot { width: 9px; height: 9px; border-radius: 50%; background: rgba(255,255,255,0.12); border: 1px solid var(--glass-border); }
 .slot-dots .dot.filled { background: linear-gradient(135deg, var(--gold-soft), var(--gold)); border-color: transparent; }
+
+/* ---------- Card type toggle ---------- */
+.card-type-panel { padding: 20px 24px; display: flex; flex-direction: column; gap: 10px; }
+.card-type-panel h2 { font-family: var(--font-display); font-size: 18px; margin: 0; color: var(--ink); }
+.card-type-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--glass-border); border-radius: 12px; padding: 4px; }
+.card-type-btn {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: background .14s ease, color .14s ease;
+}
+.card-type-btn:hover { color: var(--ink); }
+.card-type-btn.active { background: linear-gradient(135deg, var(--gold-soft), var(--gold)); color: #21170a; }
+
+/* ---------- Excel import dropzone ---------- */
+.dropzone {
+  border: 1.5px dashed var(--glass-border);
+  border-radius: 12px;
+  padding: 22px 14px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: border-color .14s ease, background .14s ease, color .14s ease;
+}
+.dropzone:hover, .dropzone-active {
+  border-color: var(--accent);
+  background: rgba(183, 92, 39, 0.08);
+  color: var(--ink);
+}
+.dropzone-input { display: none; }
+
+/* ---------- Toast notifications ---------- */
+.toast {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  z-index: 50;
+  max-width: 340px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+  backdrop-filter: blur(14px);
+}
+.toast-success { background: rgba(34, 139, 87, 0.18); border: 1px solid rgba(34, 139, 87, 0.4); color: #b7f2d3; }
+.toast-error { background: rgba(200, 60, 60, 0.18); border: 1px solid rgba(200, 60, 60, 0.4); color: #ffc4c4; }
 
 .sheets-panel { padding: 18px; display: flex; flex-direction: column; gap: 8px; }
 .sheets-panel h3 { font-family: var(--font-display); font-size: 15px; margin: 0; color: var(--ink); }
@@ -1098,12 +1647,12 @@ body {
   .layout { grid-template-columns: 1fr; }
 }
 
-/* ---------- Badge print artwork (unchanged physical layout) ---------- */
+/* ---------- Card print artwork (unchanged physical layout) ---------- */
 .a4-page { width: ${PAGE_W}pt; height: ${PAGE_H}pt; padding: ${MARGIN}pt; background: #fff; position: relative; }
 .a4-grid { width: 100%; height: 100%; display: grid; grid-template-columns: repeat(${COLS}, ${BADGE_W}pt); grid-template-rows: repeat(${ROWS}, ${BADGE_H}pt); gap: ${GAP_Y}pt ${GAP_X}pt; justify-content: center; align-content: start; }
 .badge { position: relative; width: ${BADGE_W}pt; height: ${BADGE_H}pt; }
 .badge-inner { position: absolute; inset: 0; background-size: 100% 100%; background-repeat: no-repeat; background-position: center; overflow: hidden; }
-.badge-empty .badge-inner { opacity: .55; }
+.badge-empty .badge-inner, .badge-empty .mealcard-inner { opacity: .55; }
 .field-overlay { position: absolute; display: flex; align-items: flex-end; overflow: hidden; pointer-events: none; }
 .qr-overlay {
   position: absolute;
@@ -1128,6 +1677,67 @@ body {
   line-height: 1.05;
   text-shadow: 0 0 2px rgba(255,255,255,0.45);
 }
+
+/* ---------- Meal card artwork (fully coded, no background template) ---------- */
+.mealcard-inner {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  border:2pt solid #ba7b23;
+  border-radius: 2pt;
+  padding: 7pt 8pt;
+  display: flex;
+  flex-direction: column;
+  gap: 4pt;
+  font-family: var(--font-body);
+  color: #2b2622;
+  overflow: hidden;
+}
+.mealcard-header { display: flex; align-items: center; gap: 7pt; }
+.mealcard-logo {
+  width: 30pt; height: 30pt; border-radius: 4pt; overflow: hidden; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; background: #f3ede6;
+}
+.mealcard-logo img { width: 100%; height: 100%; object-fit: contain; }
+.mealcard-logo-fallback { font-size: 6pt; font-weight: 700; color: #b3a99b; letter-spacing: 0.06em; }
+.mealcard-event { flex: 1; display: flex; flex-direction: column; gap: 1.5pt; min-width: 0; }
+.mealcard-event-name {
+  font-family: var(--font-display); font-size: 7.5pt; font-weight: 700; color: var(--brand-700);
+  text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mealcard-name { font-family: 'Balderasu', var(--font-body); font-size: 12pt; font-weight: 700; color: #211a12; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;padding-top: 8px; }
+.mealcard-qr { flex-shrink: 0;
+ }
+.mealcard-meta {
+  display: flex; gap: 10pt; font-size: 7.5pt; font-weight: 600; color: #6b6257;
+  padding-bottom: 3pt;
+  padding-left: 45px;
+   border-bottom: 0.5pt solid rgb(103, 77, 37);
+}
+.meal-table { display: flex; flex-direction: column; gap: 2.5pt; margin-top: 3pt; flex: 1; justify-content: center; }
+.meal-row { display: grid; grid-template-columns: 32pt repeat(7, 1fr); gap: 2pt; align-items: center; min-height: 13pt; }
+.meal-row-head .meal-day-head {
+  font-family: 'Balderasu', var(--font-amharic);
+  font-size: 6pt;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.05;
+  color: #9b6621;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.meal-label {
+  font-family: 'Balderasu', var(--font-amharic);
+  font-size: 7.2pt;
+  font-weight: 700;
+  color: #4a4339;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 16px;
+}
+.meal-checkbox { width: 14pt; height: 12pt; border: 0.9pt solid #9b9384; border-radius: 1.5pt; justify-self: center; background: #fff; }
 .crop { position: absolute; width: 0; height: 0; pointer-events: none; }
 .crop-h, .crop-v { position: absolute; background: var(--crop); }
 .crop-h { height: 0.5pt; }
